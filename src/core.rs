@@ -467,7 +467,7 @@ fn open_pty() -> Option<(std::fs::File, std::process::Stdio, std::process::Stdio
     use std::os::fd::FromRawFd;
     let mut master: libc::c_int = 0;
     let mut slave: libc::c_int = 0;
-    let rc = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) };
+    let rc = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()) };
     if rc != 0 {
         return None;
     }
