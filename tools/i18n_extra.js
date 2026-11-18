@@ -1,0 +1,28 @@
+/* keys that only the native app needs */
+K('mExtractHere', 'Extract here', 'Buraya çıkar', 'Hier entpacken', 'Extraire ici', 'Extraer aquí', 'Извлечь сюда', '解压到此处');
+K('mExtractTo', 'Extract to "{0}"', '"{0}" klasörüne çıkar', 'Entpacken nach "{0}"', 'Extraire vers "{0}"', 'Extraer en "{0}"', 'Извлечь в "{0}"', '解压到 "{0}"');
+K('mExtractFiles', 'Extract files…', 'Dosyaları çıkar…', 'Dateien entpacken …', 'Extraire les fichiers…', 'Extraer archivos…', 'Извлечь файлы…', '解压文件…');
+K('mAddTo', 'Add to "{0}"', '"{0}" arşivine ekle', 'Zu "{0}" hinzufügen', 'Ajouter à "{0}"', 'Añadir a "{0}"', 'Добавить в "{0}"', '添加到 "{0}"');
+K('mAddArchive', 'Add to archive…', 'Arşive ekle…', 'Zu Archiv hinzufügen …', 'Ajouter à l’archive…', 'Añadir al archivo…', 'Добавить в архив…', '添加到压缩包…');
+K('mTestArchive', 'Test archive', 'Arşivi test et', 'Archiv testen', 'Tester l’archive', 'Probar archivo', 'Проверить архив', '测试压缩包');
+K('mOpenArchive', 'Open archive', 'Arşivi aç', 'Archiv öffnen', 'Ouvrir l’archive', 'Abrir archivo', 'Открыть архив', '打开压缩包');
+K('mChecksum', 'Checksum', 'Sağlama toplamı', 'Prüfsumme', 'Somme de contrôle', 'Suma de verificación', 'Контрольная сумма', '校验和');
+K('settings', 'Settings', 'Ayarlar', 'Einstellungen', 'Paramètres', 'Ajustes', 'Настройки', '设置');
+K('shellTitle', 'File manager integration', 'Dosya yöneticisi entegrasyonu', 'Dateimanager-Integration', 'Intégration au gestionnaire de fichiers', 'Integración con el gestor de archivos', 'Интеграция с файловым менеджером', '文件管理器集成');
+K('shellInstall', 'Add right-click menu entries', 'Sağ tık menüsüne ekle', 'Kontextmenü-Einträge hinzufügen', 'Ajouter au menu contextuel', 'Añadir al menú contextual', 'Добавить в контекстное меню', '添加右键菜单');
+K('shellRemove', 'Remove right-click menu entries', 'Sağ tık menüsünden kaldır', 'Kontextmenü-Einträge entfernen', 'Retirer du menu contextuel', 'Quitar del menú contextual', 'Убрать из контекстного меню', '移除右键菜单');
+K('shellDone', 'Done.', 'Tamamlandı.', 'Fertig.', 'Terminé.', 'Hecho.', 'Готово.', '完成。');
+K('shellFail', 'Failed: {0}', 'Başarısız: {0}', 'Fehlgeschlagen: {0}', 'Échec : {0}', 'Error: {0}', 'Ошибка: {0}', '失败：{0}');
+K('shellHint', 'You may need to restart the file manager (or log out and in) to see the new menu.', 'Yeni menüyü görmek için dosya yöneticisini yeniden başlatmanız (veya oturumu kapatıp açmanız) gerekebilir.', 'Eventuell müssen Sie den Dateimanager neu starten (oder sich neu anmelden).', 'Il peut être nécessaire de relancer le gestionnaire de fichiers (ou de vous reconnecter).', 'Puede que deba reiniciar el gestor de archivos (o volver a iniciar sesión).', 'Возможно, потребуется перезапустить файловый менеджер (или перезайти в систему).', '可能需要重新启动文件管理器（或重新登录）才能看到新菜单。');
+K('batchDone', 'All tasks finished.', 'Tüm işlemler tamamlandı.', 'Alle Aufgaben abgeschlossen.', 'Toutes les tâches sont terminées.', 'Todas las tareas han terminado.', 'Все задачи выполнены.', '所有任务已完成。');
+K('batchItem', 'Archive {0} of {1}: {2}', 'Arşiv {0} / {1}: {2}', 'Archiv {0} von {1}: {2}', 'Archive {0} sur {1} : {2}', 'Archivo {0} de {1}: {2}', 'Архив {0} из {1}: {2}', '压缩包 {0}/{1}：{2}');
+K('noFontHint', '', '', '', '', '', '', '');
+K('pCopyLog', 'Copy log', 'Günlüğü kopyala', 'Protokoll kopieren', 'Copier le journal', 'Copiar registro', 'Копировать журнал', '复制日志');
+K('openWith', 'Archive file', 'Arşiv dosyası', 'Archivdatei', 'Fichier d’archive', 'Archivo', 'Файл архива', '压缩文件');
+K('sortName', 'Name', 'Ad', 'Name', 'Nom', 'Nombre', 'Имя', '名称');
+K('search', 'Filter', 'Filtre', 'Filter', 'Filtre', 'Filtro', 'Фильтр', '筛选');
+K('pickFile', 'File', 'Dosya', 'Datei', 'Fichier', 'Archivo', 'Файл', '文件');
+K('nothingToDo', 'Nothing to do.', 'Yapılacak bir şey yok.', 'Nichts zu tun.', 'Rien à faire.', 'Nada que hacer.', 'Делать нечего.', '没有可执行的操作。');
+K('tFetchOpen', 'Preparing file…', 'Dosya hazırlanıyor…', 'Datei wird vorbereitet …', 'Préparation du fichier…', 'Preparando archivo…', 'Подготовка файла…', '正在准备文件…');
+K('menuNote', 'Tip: double-click a file in the list to open it with the default program.', 'İpucu: listede bir dosyaya çift tıklayarak varsayılan programla açabilirsiniz.', 'Tipp: Doppelklick auf eine Datei öffnet sie mit dem Standardprogramm.', 'Astuce : double-cliquez sur un fichier pour l’ouvrir avec le programme par défaut.', 'Consejo: haga doble clic en un archivo para abrirlo con el programa predeterminado.', 'Совет: дважды щёлкните файл, чтобы открыть его программой по умолчанию.', '提示：双击列表中的文件可用默认程序打开。');
+K('about', 'About', 'Hakkında', 'Über', 'À propos', 'Acerca de', 'О программе', '关于');
