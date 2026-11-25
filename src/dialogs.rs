@@ -63,6 +63,23 @@ pub struct CreateDlg {
     show_pw: bool,
     touched: bool,
     prev_level: u32,
+    pub dead: bool,
+}
+
+pub struct DropDlg {
+    pub paths: Vec<PathBuf>,
+}
+
+enum DropAct {
+    None,
+    Close,
+    Open,
+    Here,
+    To,
+    ExtractDlg,
+    AddOpen,
+    AddNew,
+    Quick(&'static str),
 }
 
 pub struct HashView {
@@ -94,19 +111,59 @@ pub enum CreateRes {
 // ---------------------------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------------------------
-fn shell<R>(ui: &mut egui::Ui, batch: bool, id: &str, width: f32, esc_ok: bool, f: impl FnOnce(&mut egui::Ui) -> R) -> (R, bool) {
+fn shell<R: Default>(ui: &mut egui::Ui, batch: bool, id: &str, title: &str, size: [f32; 2], esc_ok: bool, f: impl FnOnce(&mut egui::Ui) -> R) -> (R, bool) {
     if batch {
         let r = egui::CentralPanel::default().show(ui, |ui| f(ui)).inner;
-        (r, false)
-    } else {
-        let ctx = ui.ctx().clone();
-        let resp = egui::Modal::new(egui::Id::new(id)).show(&ctx, |ui| {
-            ui.set_width(width);
-            f(ui)
-        });
-        let esc = esc_ok && resp.is_top_modal && !resp.any_popup_open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-        (resp.inner, esc)
+        return (r, false);
     }
+    // every dialog is its own native window (movable, resizable); egui falls back to a draggable
+    // window inside the main one when the backend has no multi-window support
+    let ctx = ui.ctx().clone();
+    let vid = egui::ViewportId::from_hash_of(id);
+    let mut builder = egui::ViewportBuilder::default().with_title(title).with_inner_size(size).with_min_inner_size([320.0, 120.0]);
+    if let Some(r) = ctx.input(|i| i.viewport().outer_rect) {
+        let c = r.center();
+        builder = builder.with_position(egui::pos2((c.x - size[0] / 2.0).max(0.0), (c.y - size[1] / 2.0).max(0.0)));
+    }
+    let mut f = Some(f);
+    let mut closed = false;
+    let out = ctx.show_viewport_immediate(vid, builder, |ui, class| {
+        let f = f.take()?;
+        let mut res = None;
+        let mut content_h = 0.0f32;
+        let body = |ui: &mut egui::Ui| {
+            let so = egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| f(ui));
+            content_h = so.content_size.y;
+            res = Some(so.inner);
+        };
+        let embedded = class == egui::ViewportClass::EmbeddedWindow;
+        if embedded {
+            body(ui);
+        } else {
+            egui::CentralPanel::default().show(ui, |ui| body(ui));
+        }
+        let ctx = ui.ctx().clone();
+        closed = ui.input(|i| i.viewport().close_requested());
+        if esc_ok && !closed {
+            closed = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        }
+        let n = ctx.data_mut(|d| {
+            let c: &mut u32 = d.get_temp_mut_or_insert_with(egui::Id::new(("frames", vid)), || 0u32);
+            *c += 1;
+            *c
+        });
+        if !embedded {
+            // fit the window to its content: exactly in the first frames, afterwards it may only grow
+            let inner = ui.input(|i| i.viewport().inner_rect).map(|r| r.size()).unwrap_or(egui::vec2(size[0], size[1]));
+            let maxh = ui.input(|i| i.viewport().monitor_size).map(|m| m.y * 0.9).unwrap_or(900.0);
+            let want = (content_h + 30.0).clamp(120.0, maxh.max(200.0));
+            if (n <= 3 && (want - inner.y).abs() > 4.0) || (n > 3 && want > inner.y + 4.0) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(inner.x, want)));
+            }
+        }
+        res
+    });
+    (out.unwrap_or_default(), closed)
 }
 
 fn combo<T: PartialEq + Clone>(ui: &mut egui::Ui, id: &str, cur: &mut T, opts: &[(T, String)], enabled: bool, width: f32) -> bool {
@@ -126,7 +183,8 @@ fn combo<T: PartialEq + Clone>(ui: &mut egui::Ui, id: &str, cur: &mut T, opts: &
 
 fn buttons_right(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(6.0);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add);
+    // fixed height: a bare right-to-left layout would take all the free height and the window would keep growing
+    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 28.0), egui::Layout::right_to_left(egui::Align::Center), add);
 }
 
 fn max_body_h(ui: &egui::Ui) -> f32 {
@@ -150,7 +208,25 @@ impl CreateDlg {
             default_archive_name(&items, "7z")
         };
         o.out = out;
-        CreateDlg { o, items, sel: None, pw2: String::new(), show_pw: false, touched: false, prev_level: 5 }
+        CreateDlg { o, items, sel: None, pw2: String::new(), show_pw: false, touched: false, prev_level: 5, dead: false }
+    }
+    /// Dialog that adds `items` to an archive that already exists (the open one).
+    pub fn for_archive(app: &App, items: Vec<(PathBuf, bool)>, archive: &Path, password: &str) -> CreateDlg {
+        let mut d = CreateDlg::new(app, items);
+        let ext = archive.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if is_updatable(&ext) {
+            d.o.fmt = ext;
+        }
+        d.o.method = methods_for(&d.o.fmt).first().map(|s| s.to_string()).unwrap_or_default();
+        d.o.out = archive.to_string_lossy().to_string();
+        d.touched = true;
+        d.o.if_exists = "add".into();
+        if !password.is_empty() {
+            d.o.password = password.to_string();
+            d.pw2 = password.to_string();
+        }
+        d.normalize(true);
+        d
     }
     pub fn add_items(&mut self, v: Vec<(PathBuf, bool)>) {
         for it in v {
@@ -232,23 +308,58 @@ impl CreateDlg {
 // App: modal runner
 // ---------------------------------------------------------------------------------------------
 impl App {
-    pub fn run_modals(&mut self, ui: &mut egui::Ui) {
-        self.modals.append(&mut self.pending);
-        let Some(mut m) = self.modals.pop() else { return };
-        let keep = self.show_modal(ui, &mut m);
-        if keep {
-            self.modals.push(m);
+    fn absorb_pending(&mut self) {
+        for m in std::mem::take(&mut self.pending) {
+            self.next_uid += 1;
+            self.modals.push((self.next_uid, m));
         }
-        self.modals.append(&mut self.pending);
     }
 
-    fn show_modal(&mut self, ui: &mut egui::Ui, m: &mut Modal) -> bool {
+    pub fn run_modals(&mut self, ui: &mut egui::Ui) {
+        self.absorb_pending();
+        let mut i = 0;
+        while i < self.modals.len() {
+            let uid = self.modals[i].0;
+            let mut m = std::mem::replace(&mut self.modals[i].1, Modal::Taken);
+            let keep = self.show_modal(ui, uid, &mut m);
+            let pos = self.modals.iter().position(|e| e.0 == uid);
+            match pos {
+                Some(p) if keep => {
+                    self.modals[p].1 = m;
+                    i = p + 1;
+                }
+                Some(p) => {
+                    self.modals.remove(p);
+                    i = p;
+                }
+                None => i += 1,
+            }
+            self.absorb_pending();
+        }
+    }
+
+    /// The "Add to archive" window that sits below the dialog being shown asks to be closed.
+    fn close_create_below(&mut self) {
+        for e in self.modals.iter_mut().rev() {
+            if let Modal::Create(d) = &mut e.1 {
+                d.dead = true;
+                break;
+            }
+        }
+    }
+
+    fn show_modal(&mut self, ui: &mut egui::Ui, uid: u64, m: &mut Modal) -> bool {
         match m {
-            Modal::Msg { text } => self.dlg_msg(ui, text),
-            Modal::Password { text, input, path, purpose } => self.dlg_password(ui, text, input, path, purpose),
+            Modal::Taken => true,
+            Modal::Msg { text } => self.dlg_msg(ui, uid, text),
+            Modal::Password { text, input, path, purpose } => self.dlg_password(ui, uid, text, input, path, purpose),
             Modal::Picker(p) => {
-                let ctx = ui.ctx().clone();
-                match p.show(&ctx, &self.tr) {
+                let batch = self.batch_mode;
+                let tr = &self.tr;
+                let title = p.title.clone();
+                let (res, closed) = shell(ui, batch, &format!("picker-{uid}"), &title, [660.0, 520.0], true, |ui| p.show(ui, tr));
+                let res = if closed { Some(crate::picker::PickResult::Cancel) } else { res };
+                match res {
                     Some(r) => {
                         let cur = p.current_dir().to_string();
                         self.route_pick(p.target, r, cur);
@@ -257,23 +368,24 @@ impl App {
                     None => true,
                 }
             }
-            Modal::Extract(d) => self.dlg_extract(ui, d),
-            Modal::Create(d) => self.dlg_create(ui, d),
-            Modal::Exists { opts, noadd, out } => self.dlg_exists(ui, opts, *noadd, out),
-            Modal::ConfirmDelete { opts } => self.dlg_confirm_delete(ui, opts),
-            Modal::Progress(d) => self.dlg_progress(ui, d),
-            Modal::Props => self.dlg_props(ui),
-            Modal::HashChoose => self.dlg_hash_choose(ui),
-            Modal::HashView(h) => self.dlg_hash_view(ui, h),
-            Modal::Bench(b) => self.dlg_bench(ui, b),
-            Modal::Settings(s) => self.dlg_settings(ui, s),
+            Modal::Extract(d) => self.dlg_extract(ui, uid, d),
+            Modal::Create(d) => self.dlg_create(ui, uid, d),
+            Modal::Exists { opts, noadd, out } => self.dlg_exists(ui, uid, opts, *noadd, out),
+            Modal::ConfirmDelete { opts } => self.dlg_confirm_delete(ui, uid, opts),
+            Modal::Progress(d) => self.dlg_progress(ui, uid, d),
+            Modal::Props => self.dlg_props(ui, uid),
+            Modal::HashChoose => self.dlg_hash_choose(ui, uid),
+            Modal::HashView(h) => self.dlg_hash_view(ui, uid, h),
+            Modal::Bench(b) => self.dlg_bench(ui, uid, b),
+            Modal::Settings(s) => self.dlg_settings(ui, uid, s),
+            Modal::Drop(d) => self.dlg_drop(ui, uid, d),
         }
     }
 
     // ---- simple dialogs
-    fn dlg_msg(&mut self, ui: &mut egui::Ui, text: &str) -> bool {
+    fn dlg_msg(&mut self, ui: &mut egui::Ui, uid: u64, text: &str) -> bool {
         let tr = &self.tr;
-        let (ok, esc) = shell(ui, self.batch_mode, "msg", 440.0, true, |ui| {
+        let (ok, esc) = shell(ui, self.batch_mode, &format!("msg-{uid}"), "Universal 7-Zip GUI", [440.0, 150.0], true, |ui| {
             ui.add(egui::Label::new(text).wrap());
             let mut ok = false;
             buttons_right(ui, |ui| {
@@ -284,10 +396,10 @@ impl App {
         !(ok || esc)
     }
 
-    fn dlg_password(&mut self, ui: &mut egui::Ui, text: &str, input: &mut String, path: &Path, purpose: &Purpose) -> bool {
+    fn dlg_password(&mut self, ui: &mut egui::Ui, uid: u64, text: &str, input: &mut String, path: &Path, purpose: &Purpose) -> bool {
         let tr = &self.tr;
         let mut act = 0; // 1 ok, 2 cancel
-        let (_, esc) = shell(ui, self.batch_mode, "pw", 400.0, true, |ui| {
+        let (_, esc) = shell(ui, self.batch_mode, &format!("pw-{uid}"), &tr.t("pwTitle"), [400.0, 170.0], true, |ui| {
             ui.heading(tr.t("pwTitle"));
             ui.label(text);
             let r = ui.add(egui::TextEdit::singleline(input).password(true).desired_width(f32::INFINITY));
@@ -313,11 +425,15 @@ impl App {
     }
 
     // ---- extract
-    fn dlg_extract(&mut self, ui: &mut egui::Ui, d: &mut ExtractDlg) -> bool {
+    fn dlg_extract(&mut self, ui: &mut egui::Ui, uid: u64, d: &mut ExtractDlg) -> bool {
         let tr = &self.tr;
         let mut act = 0; // 1 ok, 2 cancel, 3 browse
         let modes = [("aoa", tr.t("ow1")), ("aos", tr.t("ow2")), ("aou", tr.t("ow3")), ("aot", tr.t("ow4"))];
-        let (_, esc) = shell(ui, self.batch_mode, "extract", 560.0, true, |ui| {
+        let (_, esc) = shell(ui, self.batch_mode, &format!("extract-{uid}"), &tr.t("exTitle"), [560.0, 330.0], true, |ui| {
+            let dropped: Option<PathBuf> = ui.input(|i| i.raw.dropped_files.iter().find_map(|f| { let p = f.path().to_path_buf(); Some(if p.is_dir() { p } else { p.parent()?.to_path_buf() }) }));
+            if let Some(p) = dropped {
+                d.dest = p.to_string_lossy().to_string();
+            }
             ui.heading(tr.t("exTitle"));
             ui.add_space(4.0);
             ui.label(tr.t("exDest"));
@@ -374,7 +490,10 @@ impl App {
     }
 
     // ---- create
-    fn dlg_create(&mut self, ui: &mut egui::Ui, d: &mut CreateDlg) -> bool {
+    fn dlg_create(&mut self, ui: &mut egui::Ui, uid: u64, d: &mut CreateDlg) -> bool {
+        if d.dead {
+            return false;
+        }
         let sys_threads = self.sys.threads;
         let tr = &self.tr;
         let mut act = 0; // 1 ok, 2 cancel, 3 add items, 4 out folder
@@ -387,7 +506,11 @@ impl App {
         let fmt_opts: Vec<(String, String)> = FORMATS.iter().map(|f| (f.key.to_string(), fmt_label(f.key).to_string())).collect();
         let level_opts: Vec<(u32, String)> = [0u32, 1, 3, 5, 7, 9].iter().map(|l| (*l, format!("{} - {}", l, tr.t(&format!("lvl{l}"))))).collect();
         let auto = tr.t("cAuto");
-        let (_, esc) = shell(ui, batch, "create", 720.0, true, |ui| {
+        let (_, esc) = shell(ui, batch, &format!("create-{uid}"), &tr.t("cTitle"), [740.0, 640.0], true, |ui| {
+            let dropped: Vec<(PathBuf, bool)> = ui.input(|i| i.raw.dropped_files.iter().map(|f| { let p = f.path().to_path_buf(); let dir = p.is_dir(); (p, dir) }).collect());
+            if !dropped.is_empty() {
+                d.add_items(dropped);
+            }
             ui.heading(tr.t("cTitle"));
             ui.add_space(2.0);
             egui::ScrollArea::vertical().max_height(maxh).auto_shrink([false, true]).show(ui, |ui| {
@@ -596,10 +719,10 @@ impl App {
         }
     }
 
-    fn dlg_confirm_delete(&mut self, ui: &mut egui::Ui, opts: &mut CreateOpts) -> bool {
+    fn dlg_confirm_delete(&mut self, ui: &mut egui::Ui, uid: u64, opts: &mut CreateOpts) -> bool {
         let tr = &self.tr;
         let mut act = 0;
-        let (_, esc) = shell(ui, self.batch_mode, "confdel", 420.0, true, |ui| {
+        let (_, esc) = shell(ui, self.batch_mode, &format!("confdel-{uid}"), "Universal 7-Zip GUI", [420.0, 140.0], true, |ui| {
             ui.add(egui::Label::new(tr.t("cDelConfirm")).wrap());
             buttons_right(ui, |ui| {
                 if ui.button(tr.t("cancel")).clicked() {
@@ -611,9 +734,7 @@ impl App {
             });
         });
         if act == 1 {
-            if matches!(self.modals.last(), Some(Modal::Create(_))) {
-                self.modals.pop();
-            }
+            self.close_create_below();
             let o = opts.clone();
             self.start_create(o);
             return false;
@@ -621,10 +742,10 @@ impl App {
         !(act == 2 || esc)
     }
 
-    fn dlg_exists(&mut self, ui: &mut egui::Ui, opts: &mut CreateOpts, noadd: bool, out: &Path) -> bool {
+    fn dlg_exists(&mut self, ui: &mut egui::Ui, uid: u64, opts: &mut CreateOpts, noadd: bool, out: &Path) -> bool {
         let tr = &self.tr;
         let mut act = 0; // 1 overwrite 2 add 3 cancel
-        let (_, esc) = shell(ui, self.batch_mode, "exists", 480.0, true, |ui| {
+        let (_, esc) = shell(ui, self.batch_mode, &format!("exists-{uid}"), "Universal 7-Zip GUI", [480.0, 150.0], true, |ui| {
             ui.add(egui::Label::new(tr.tf("cExists", &[&out.to_string_lossy()])).wrap());
             buttons_right(ui, |ui| {
                 if ui.button(tr.t("cancel")).clicked() {
@@ -639,9 +760,7 @@ impl App {
             });
         });
         if act == 1 || act == 2 {
-            if matches!(self.modals.last(), Some(Modal::Create(_))) {
-                self.modals.pop();
-            }
+            self.close_create_below();
             let mut o = opts.clone();
             o.if_exists = if act == 1 { "overwrite".into() } else { "add".into() };
             self.start_create(o);
@@ -674,8 +793,109 @@ impl App {
         }
     }
 
+    // ---- dropped files: ask what to do with them
+    fn dlg_drop(&mut self, ui: &mut egui::Ui, uid: u64, d: &mut DropDlg) -> bool {
+        let n = d.paths.len();
+        let all_arc = n > 0 && d.paths.iter().all(|p| p.is_file() && looks_like_archive(p));
+        let name_of = |p: &Path| p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let summary = if n == 1 { name_of(&d.paths[0]) } else { d.paths.iter().take(4).map(|p| name_of(p)).collect::<Vec<_>>().join(", ") + if n > 4 { ", …" } else { "" } };
+        let tr = &self.tr;
+        let l_open = tr.t("mOpenArchive");
+        let l_here = tr.t("mExtractHere");
+        let l_to = if n == 1 { tr.tf("mExtractTo", &[&folder_name_for(&d.paths[0])]) } else { tr.tf("mExtractTo", &["…"]) };
+        let l_dlg = tr.t("mExtractFiles");
+        let l_new = tr.t("mAddArchive");
+        let l_q7 = tr.tf("mAddTo", &["….7z"]);
+        let l_qz = tr.tf("mAddTo", &["….zip"]);
+        let open_arc = self.arch.as_ref().filter(|a| {
+            let e = a.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            is_updatable(&e)
+        });
+        let l_open_add = open_arc.map(|a| tr.tf("mAddTo", &[&name_of(&a.path)]));
+        let mut act = DropAct::None;
+        let (_, closed) = shell(ui, self.batch_mode, &format!("drop-{uid}"), &tr.t("dropTitle"), [480.0, 330.0], true, |ui| {
+            ui.heading(tr.t("dropTitle"));
+            ui.add(egui::Label::new(egui::RichText::new(&summary).weak()).truncate());
+            ui.add_space(8.0);
+            let w = ui.available_width();
+            let btn = |ui: &mut egui::Ui, label: &str| ui.add_sized([w, 30.0], egui::Button::new(label)).clicked();
+            if all_arc {
+                if n == 1 && btn(ui, &l_open) {
+                    act = DropAct::Open;
+                }
+                if btn(ui, &l_here) {
+                    act = DropAct::Here;
+                }
+                if btn(ui, &l_to) {
+                    act = DropAct::To;
+                }
+                if n == 1 && btn(ui, &l_dlg) {
+                    act = DropAct::ExtractDlg;
+                }
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(6.0);
+            }
+            if let Some(l) = &l_open_add {
+                if btn(ui, l) {
+                    act = DropAct::AddOpen;
+                }
+            }
+            if btn(ui, &l_new) {
+                act = DropAct::AddNew;
+            }
+            if btn(ui, &l_q7) {
+                act = DropAct::Quick("7z");
+            }
+            if btn(ui, &l_qz) {
+                act = DropAct::Quick("zip");
+            }
+            buttons_right(ui, |ui| {
+                if ui.add(egui::Button::new(tr.t("cancel")).min_size(egui::vec2(80.0, 0.0))).clicked() {
+                    act = DropAct::Close;
+                }
+            });
+        });
+        let items = || d.paths.iter().map(|p| (p.clone(), p.is_dir())).collect::<Vec<_>>();
+        match act {
+            DropAct::None => !closed,
+            DropAct::Close => false,
+            DropAct::Open => {
+                self.open_archive(d.paths[0].clone(), String::new(), Purpose::Normal);
+                false
+            }
+            DropAct::ExtractDlg => {
+                self.open_archive(d.paths[0].clone(), String::new(), Purpose::ExtractDialog);
+                false
+            }
+            DropAct::Here => {
+                self.spawn_self(&["extract-here"], &d.paths);
+                false
+            }
+            DropAct::To => {
+                self.spawn_self(&["extract-to"], &d.paths);
+                false
+            }
+            DropAct::Quick(f) => {
+                self.spawn_self(&["quick-add", f], &d.paths);
+                false
+            }
+            DropAct::AddNew => {
+                self.push_create(items());
+                false
+            }
+            DropAct::AddOpen => {
+                if let Some(a) = &self.arch {
+                    let dlg = CreateDlg::for_archive(self, items(), &a.path, &a.password);
+                    self.pending.push(Modal::Create(Box::new(dlg)));
+                }
+                false
+            }
+        }
+    }
+
     // ---- progress
-    fn dlg_progress(&mut self, ui: &mut egui::Ui, d: &mut ProgressDlg) -> bool {
+    fn dlg_progress(&mut self, ui: &mut egui::Ui, uid: u64, d: &mut ProgressDlg) -> bool {
         let s = d.job.snapshot();
         self.ctx.request_repaint_after(Duration::from_millis(100));
         let rc = s.rc.unwrap_or(0);
@@ -701,9 +921,10 @@ impl App {
         }
         let tr = &self.tr;
         let batch = self.batch_mode;
+        let wtitle = self.prog_title.clone().unwrap_or_else(|| d.title.clone());
         let mut close = false;
         let mut copy_log = false;
-        let (_, _) = shell(ui, batch, "progress", 500.0, false, |ui| {
+        let (_, closed) = shell(ui, batch, &format!("progress-{uid}"), &wtitle, [500.0, 340.0], false, |ui| {
             ui.heading(&d.title);
             ui.add_space(4.0);
             let dash = "-".to_string();
@@ -789,6 +1010,13 @@ impl App {
                 });
             }
         });
+        if closed {
+            if s.done {
+                close = true;
+            } else {
+                d.job.cancel();
+            }
+        }
         if copy_log {
             self.ctx.copy_text(d.job.text());
         }
@@ -836,10 +1064,10 @@ impl App {
     }
 
     // ---- properties
-    fn dlg_props(&mut self, ui: &mut egui::Ui) -> bool {
+    fn dlg_props(&mut self, ui: &mut egui::Ui, uid: u64) -> bool {
         let tr = &self.tr;
         let Some(a) = &self.arch else { return false };
-        let (close, esc) = shell(ui, self.batch_mode, "props", 560.0, true, |ui| {
+        let (close, esc) = shell(ui, self.batch_mode, &format!("props-{uid}"), &tr.t("propTitle"), [560.0, 460.0], true, |ui| {
             ui.heading(tr.t("propTitle"));
             ui.add_space(4.0);
             egui::ScrollArea::vertical().max_height(max_body_h(ui)).show(ui, |ui| {
@@ -873,12 +1101,12 @@ impl App {
     }
 
     // ---- checksums
-    fn dlg_hash_choose(&mut self, ui: &mut egui::Ui) -> bool {
+    fn dlg_hash_choose(&mut self, ui: &mut egui::Ui, uid: u64) -> bool {
         let tr = &self.tr;
         let nsel = self.arch.as_ref().map(|a| a.selected.len()).unwrap_or(0);
         let has_arch = self.arch.is_some();
         let mut act = 0; // 1 selected 2 whole 3 disk 4 cancel
-        let (_, esc) = shell(ui, self.batch_mode, "hashc", 520.0, true, |ui| {
+        let (_, esc) = shell(ui, self.batch_mode, &format!("hashc-{uid}"), &tr.t("hTitle"), [520.0, 250.0], true, |ui| {
             ui.heading(tr.t("hTitle"));
             ui.add(egui::Label::new(tr.t("hChoose")).wrap());
             ui.add_space(6.0);
@@ -918,11 +1146,11 @@ impl App {
         }
     }
 
-    fn dlg_hash_view(&mut self, ui: &mut egui::Ui, h: &mut HashView) -> bool {
+    fn dlg_hash_view(&mut self, ui: &mut egui::Ui, uid: u64, h: &mut HashView) -> bool {
         let tr = &self.tr;
         let mut copy: Option<String> = None;
         let maxh = max_body_h(ui);
-        let (close, esc) = shell(ui, self.batch_mode, "hashv", 820.0, true, |ui| {
+        let (close, esc) = shell(ui, self.batch_mode, &format!("hashv-{uid}"), &tr.t("hTitle"), [840.0, 520.0], true, |ui| {
             ui.heading(tr.t("hTitle"));
             ui.add_space(4.0);
             egui::ScrollArea::both().max_height(maxh).auto_shrink([false, true]).show(ui, |ui| {
@@ -976,7 +1204,7 @@ impl App {
     }
 
     // ---- benchmark
-    fn dlg_bench(&mut self, ui: &mut egui::Ui, b: &mut BenchDlg) -> bool {
+    fn dlg_bench(&mut self, ui: &mut egui::Ui, uid: u64, b: &mut BenchDlg) -> bool {
         let tr = &self.tr;
         let running = b.job.as_ref().map(|j| !j.is_done()).unwrap_or(false);
         if running {
@@ -991,7 +1219,7 @@ impl App {
         let dict_o: Vec<(u32, String)> = (18u32..=30).map(|l| (l, fmt_mb((1u64 << l) as f64))).collect();
         let thr_o: Vec<(u32, String)> = (1..=thr_max).map(|n| (n, n.to_string())).collect();
         let raw = b.job.as_ref().map(|j| j.text()).unwrap_or_default();
-        let (_, esc) = shell(ui, self.batch_mode, "bench", 800.0, true, |ui| {
+        let (_, esc) = shell(ui, self.batch_mode, &format!("bench-{uid}"), &tr.t("bnTitle"), [820.0, 620.0], true, |ui| {
             ui.heading(tr.t("bnTitle"));
             egui::ScrollArea::vertical().max_height(maxh).auto_shrink([false, true]).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -1099,7 +1327,7 @@ impl App {
     }
 
     // ---- settings
-    fn dlg_settings(&mut self, ui: &mut egui::Ui, s: &mut SettingsDlg) -> bool {
+    fn dlg_settings(&mut self, ui: &mut egui::Ui, uid: u64, s: &mut SettingsDlg) -> bool {
         let tr = &self.tr;
         let mut new_theme: Option<String> = None;
         let mut new_lang: Option<String> = None;
@@ -1110,7 +1338,7 @@ impl App {
         let banner = self.sz.as_ref().map(|z| format!("{}\n{}", z.exe.to_string_lossy(), z.banner)).unwrap_or_default();
         let themes: Vec<(String, String)> = [("auto", "themeAuto"), ("light", "themeLight"), ("dark", "themeDark"), ("oled", "themeOled")].iter().map(|(k, l)| (k.to_string(), tr.t(l))).collect();
         let mut close = false;
-        let (_, esc) = shell(ui, self.batch_mode, "settings", 520.0, true, |ui| {
+        let (_, esc) = shell(ui, self.batch_mode, &format!("settings-{uid}"), &tr.t("settings"), [540.0, 470.0], true, |ui| {
             ui.heading(tr.t("settings"));
             ui.add_space(4.0);
             egui::Grid::new("sgrid").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {

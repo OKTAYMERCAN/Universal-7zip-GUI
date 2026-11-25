@@ -163,14 +163,13 @@ impl Picker {
         self.addr = self.cur.clone();
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, tr: &I18n) -> Option<PickResult> {
+    pub fn show(&mut self, ui: &mut egui::Ui, tr: &I18n) -> Option<PickResult> {
         if let Some(p) = self.to_load.take() {
             self.load(&p);
         }
         let mut result: Option<PickResult> = None;
         let mut goto: Option<String> = None;
-        egui::Modal::new(egui::Id::new(("picker", self.target as u8))).show(ctx, |ui| {
-            ui.set_width(620.0);
+        {
             ui.heading(&self.title);
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -318,9 +317,6 @@ impl Picker {
                     }
                 });
             });
-        });
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            result = Some(PickResult::Cancel);
         }
         if let Some(g) = goto {
             self.load(&g);

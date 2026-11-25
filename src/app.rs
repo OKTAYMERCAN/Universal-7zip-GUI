@@ -207,6 +207,9 @@ pub enum Modal {
     HashView(Box<HashView>),
     Bench(Box<BenchDlg>),
     Settings(Box<SettingsDlg>),
+    Drop(Box<DropDlg>),
+    /// placeholder while a modal is being drawn
+    Taken,
 }
 
 #[derive(Clone)]
@@ -250,7 +253,8 @@ pub struct App {
     pub sys: SysInfo,
     pub arch: Option<Opened>,
     open_task: Option<OpenTask>,
-    pub modals: Vec<Modal>,
+    pub modals: Vec<(u64, Modal)>,
+    pub next_uid: u64,
     pub pending: Vec<Modal>,
     pub status: String,
     batch: Vec<Task>,
@@ -461,6 +465,9 @@ impl App {
         let lang = if cfg.lang.is_empty() { i18n::system_lang() } else { cfg.lang.clone() };
         let tr = I18n::load(&lang);
         let ctx = cc.egui_ctx.clone();
+        if std::env::var_os("U7Z_EMBED").is_some() {
+            ctx.set_embed_viewports(true); // test hook: dialogs inside the main window
+        }
         install_fonts(&ctx, &tr.lang);
         base_style(&ctx);
         apply_theme(&ctx, &cfg.theme);
@@ -475,6 +482,7 @@ impl App {
             arch: None,
             open_task: None,
             modals: vec![],
+            next_uid: 0,
             pending: vec![],
             status: String::new(),
             batch_total: start.batch.len(),
@@ -721,12 +729,17 @@ impl App {
         if self.arch.is_none() {
             let m = self.t("openFirst");
             self.msg(m);
-        } else {
+        } else if !self.has_modal(|m| matches!(m, Modal::Props)) {
             self.pending.push(Modal::Props);
         }
     }
+    pub fn has_modal(&self, f: impl Fn(&Modal) -> bool) -> bool {
+        self.modals.iter().any(|e| f(&e.1)) || self.pending.iter().any(|m| f(m))
+    }
     pub fn cmd_hash(&mut self) {
-        self.pending.push(Modal::HashChoose);
+        if !self.has_modal(|m| matches!(m, Modal::HashChoose)) {
+            self.pending.push(Modal::HashChoose);
+        }
     }
     pub fn cmd_bench(&mut self) {
         let Some(sz) = self.sz.clone() else {
@@ -734,10 +747,14 @@ impl App {
             self.msg(m);
             return;
         };
-        self.pending.push(Modal::Bench(Box::new(BenchDlg::new(sz, &self.sys))));
+        if !self.has_modal(|m| matches!(m, Modal::Bench(_))) {
+            self.pending.push(Modal::Bench(Box::new(BenchDlg::new(sz, &self.sys))));
+        }
     }
     pub fn cmd_settings(&mut self) {
-        self.pending.push(Modal::Settings(Box::new(SettingsDlg::default())));
+        if !self.has_modal(|m| matches!(m, Modal::Settings(_))) {
+            self.pending.push(Modal::Settings(Box::new(SettingsDlg::default())));
+        }
     }
 
     /// Route the result of a picker to whatever asked for it (the dialog below it on the stack).
@@ -750,17 +767,17 @@ impl App {
             (PickTarget::OpenArchive, PickResult::Path(p)) => self.open_archive(p, String::new(), Purpose::Normal),
             (PickTarget::HashDisk, PickResult::Multi(v)) => self.start_hash_disk(v.into_iter().map(|x| x.0).collect()),
             (PickTarget::ExtractDest, PickResult::Path(p)) => {
-                if let Some(Modal::Extract(d)) = self.modals.last_mut() {
+                if let Some(d) = self.modals.iter_mut().rev().find_map(|e| if let Modal::Extract(d) = &mut e.1 { Some(d) } else { None }) {
                     d.dest = p.to_string_lossy().to_string();
                 }
             }
             (PickTarget::CreateItems, PickResult::Multi(v)) => {
-                if let Some(Modal::Create(d)) = self.modals.last_mut() {
+                if let Some(d) = self.modals.iter_mut().rev().find_map(|e| if let Modal::Create(d) = &mut e.1 { Some(d) } else { None }) {
                     d.add_items(v);
                 }
             }
             (PickTarget::CreateOutDir, PickResult::Path(p)) => {
-                if let Some(Modal::Create(d)) = self.modals.last_mut() {
+                if let Some(d) = self.modals.iter_mut().rev().find_map(|e| if let Modal::Create(d) = &mut e.1 { Some(d) } else { None }) {
                     d.set_out_dir(&p);
                 }
             }
@@ -768,16 +785,36 @@ impl App {
         }
     }
 
+    /// Files dropped on the main window: ask what to do (dialogs take their own drops).
     fn handle_drop(&mut self) {
         let dropped: Vec<PathBuf> = self.ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
-        if dropped.is_empty() || !self.modals.is_empty() || self.batch_mode {
+        if dropped.is_empty() || self.batch_mode {
             return;
         }
-        if dropped.len() == 1 && dropped[0].is_file() && looks_like_archive(&dropped[0]) {
-            self.open_archive(dropped[0].clone(), String::new(), Purpose::Normal);
-        } else {
-            let items = dropped.into_iter().map(|p| { let d = p.is_dir(); (p, d) }).collect();
-            self.push_create(items);
+        // a dialog that sits in the main window (embedded fallback) handles its own drops
+        if self.modals.iter().any(|e| matches!(e.1, Modal::Create(_) | Modal::Extract(_))) && self.ctx.embed_viewports() {
+            return;
+        }
+        self.pending.push(Modal::Drop(Box::new(DropDlg { paths: dropped })));
+    }
+
+    fn drop_overlay(&self, ctx: &egui::Context) {
+        if self.batch_mode || ctx.input(|i| i.raw.hovered_files.is_empty()) {
+            return;
+        }
+        let r = ctx.content_rect();
+        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop_overlay")));
+        let col = ctx.global_style().visuals.selection.bg_fill;
+        p.rect_filled(r, 0.0, egui::Color32::from_black_alpha(150));
+        p.rect_stroke(r.shrink(10.0), 8.0, egui::Stroke::new(3.0, col), egui::StrokeKind::Inside);
+        p.text(r.center(), egui::Align2::CENTER_CENTER, self.tr.t("dropHint"), egui::FontId::proportional(26.0), egui::Color32::WHITE);
+    }
+
+    /// Run this program again as a separate process (own progress window), like the right-click entries do.
+    pub fn spawn_self(&mut self, args: &[&str], paths: &[PathBuf]) {
+        let res = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).args(args).args(paths).spawn());
+        if let Err(e) = res {
+            self.msg(e.to_string());
         }
     }
 
@@ -807,6 +844,10 @@ impl App {
             }
             "close" => {
                 self.modals.pop();
+            }
+            "drop" => {
+                let paths: Vec<PathBuf> = v.split('|').filter(|s| !s.is_empty()).map(PathBuf::from).collect();
+                self.pending.push(Modal::Drop(Box::new(DropDlg { paths })));
             }
             "add" => {
                 let items: Vec<(PathBuf, bool)> = v.split('|').filter(|s| !s.is_empty()).map(|s| (PathBuf::from(s), PathBuf::from(s).is_dir())).collect();
@@ -879,6 +920,8 @@ impl App {
         let tr = &self.tr;
         let heads = [tr.t("colName"), tr.t("colSize"), tr.t("colPacked"), tr.t("colModified"), tr.t("colAttr"), tr.t("colEnc")];
         let yes = tr.t("yes");
+        let (l_ext, l_test, l_info) = (tr.t("mExtractFiles"), tr.t("mTestArchive"), tr.t("bInfo"));
+        let mut menu_act: Option<u8> = None;
         let mut click: Option<(usize, egui::Modifiers)> = None;
         let mut dbl: Option<usize> = None;
         let mut toggle: Option<usize> = None;
@@ -965,6 +1008,25 @@ impl App {
                         }
                     });
                     let r = row.response();
+                    if r.secondary_clicked() && !a.selected.contains(&nid) {
+                        a.selected.clear();
+                        a.selected.insert(nid);
+                        a.anchor = Some(row.index());
+                    }
+                    r.context_menu(|ui| {
+                        if ui.button(&l_ext).clicked() {
+                            menu_act = Some(1);
+                            ui.close();
+                        }
+                        if ui.button(&l_test).clicked() {
+                            menu_act = Some(2);
+                            ui.close();
+                        }
+                        if ui.button(&l_info).clicked() {
+                            menu_act = Some(3);
+                            ui.close();
+                        }
+                    });
                     if !toggled {
                         if r.double_clicked() {
                             dbl = Some(nid);
@@ -1006,6 +1068,12 @@ impl App {
                 self.start_fetch(nid);
             }
         }
+        match menu_act {
+            Some(1) => self.cmd_extract(),
+            Some(2) => self.cmd_test(),
+            Some(3) => self.cmd_info(),
+            _ => {}
+        }
     }
 }
 
@@ -1037,7 +1105,7 @@ impl eframe::App for App {
                     }
                 });
             });
-            if self.modals.is_empty() {
+            if true {
                 let (open, sel_all) = ctx.input(|i| (i.modifiers.command && i.key_pressed(egui::Key::O), i.modifiers.command && i.key_pressed(egui::Key::A)));
                 if open {
                     self.cmd_open();
@@ -1054,6 +1122,7 @@ impl eframe::App for App {
         }
 
         self.run_modals(ui);
+        self.drop_overlay(&ctx);
 
         // batch: when nothing is pending go on to the next task
         if self.batch_mode && self.modals.is_empty() && self.pending.is_empty() && self.open_task.is_none() && frame > 3 {
@@ -1063,8 +1132,8 @@ impl eframe::App for App {
 
         // window title
         let title = match (&self.prog_title, &self.arch) {
-            (Some(t), _) => format!("{t} — Universal 7-Zip GUI"),
-            (None, Some(a)) if !self.batch_mode => format!("{} — Universal 7-Zip GUI", a.path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()),
+            (Some(t), _) if self.batch_mode => format!("{t} — Universal 7-Zip GUI"),
+            (_, Some(a)) if !self.batch_mode => format!("{} — Universal 7-Zip GUI", a.path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()),
             _ => "Universal 7-Zip GUI".into(),
         };
         if title != self.last_title {
@@ -1077,14 +1146,7 @@ impl eframe::App for App {
             if frame >= at && self.script.is_empty() && self.open_task.is_none() {
                 self.shot = None;
                 ctx.request_screenshot(move |img| {
-                    let f = std::fs::File::create(&p).unwrap();
-                    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), img.width() as u32, img.height() as u32);
-                    enc.set_color(png::ColorType::Rgba);
-                    enc.set_depth(png::BitDepth::Eight);
-                    let mut w = enc.write_header().unwrap();
-                    let data: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
-                    w.write_image_data(&data).unwrap();
-                    w.finish().unwrap();
+                    save_png(&p, &img);
                     std::process::exit(0);
                 });
             }
@@ -1098,5 +1160,17 @@ impl Drop for App {
         for d in &self.tmp_dirs {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+}
+
+pub fn save_png(p: &Path, img: &egui::ColorImage) {
+    let Ok(f) = std::fs::File::create(p) else { return };
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), img.width() as u32, img.height() as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    if let Ok(mut w) = enc.write_header() {
+        let data: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+        let _ = w.write_image_data(&data);
+        let _ = w.finish();
     }
 }

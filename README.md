@@ -6,7 +6,7 @@
 
 A native desktop program for the 7-Zip console version (`7zz` / `7z` / `7z.exe`), written in Rust. It opens like any normal archive program, with no browser and no web server, and it can add **right-click entries to your file manager** (Extract here, Extract to folder, Add to archive…), like WinRAR, WinZip or 7-Zip on Windows.
 
-This is the native (Rust) version. The earlier Python/browser version is kept in the [`old version`](old%20version/) folder of this repository. The windows, options and 7 languages are the same. The compression itself is still done by 7-Zip, so the packing speed is exactly the speed of 7-Zip; what you gain is a fast-starting program of a few MB, no Python, and the file manager integration.
+This is the native (Rust) version. The earlier Python/browser version is kept in the [`old version`](old%20version/) folder of this repository. Same windows, same options, same 7 languages. The compression itself is still done by 7-Zip, so the packing speed is exactly the speed of 7-Zip; what you gain is a fast-starting program of a few MB, no Python, and the file manager integration.
 
 7-Zip stays a separate, replaceable part: put the 7-Zip files in the same folder as the program, and to update, drop the new release over the old files. The program never has to change.
 
@@ -19,7 +19,9 @@ This is the native (Rust) version. The earlier Python/browser version is kept in
 * ✅ **"Add to Archive" window:** Compression level and method (LZMA2, LZMA, PPMd, BZip2, Deflate, Deflate64, Copy), dictionary size, word size, solid block size, CPU threads, memory limit, split to volumes, extra parameters, update mode, path mode, SFX, shared files (Windows), delete after compression. Choices follow the selected format and method.
 * ✅ **Encryption:** Password with confirmation and show/hide, AES-256 or ZipCrypto, encrypted file names for 7z.
 * ✅ **Progress window:** Elapsed and remaining time, files, total size, speed, processed, compressed size, ratio, plus Background, Pause and Cancel. Right-click actions show only this window and close themselves when finished (they stay open with the log if something fails).
-* ✅ **Archive browser:** Folder tree with sizes, drag and drop of files onto the window, double-click a file to open it with the default program.
+* ✅ **Archive browser:** Folder tree with sizes, double-click a file to open it with the default program, right-click a row for Extract / Test / Info.
+* ✅ **Drag and drop:** Drop archives or files on the window and choose: open, extract here, extract to a folder, extract with options, add to the open archive, add to a new archive or quick `.7z` / `.zip`. Drop files onto the "Add to archive" window to add them, or a folder onto the "Extract" window to set the destination. (Dragging items *out* of the archive list into the file manager is not possible with this GUI toolkit; use Extract or the right-click menu.)
+* ✅ **Separate, movable windows:** Every dialog opens as its own window that you can move, resize and place on another screen.
 * ✅ **Archive properties, checksums (CRC32, CRC64, SHA-1, SHA-256, BLAKE2sp…) and a benchmark** with live ratings, like the Windows 7-Zip.
 * ✅ **Themes:** System (follows light/dark automatically, the default), Light, Dark and a pure `#000000` OLED theme.
 * ✅ **7 languages:** English, Türkçe, Deutsch, Français, Español, Русский and 简体中文, selected automatically from the system language.
@@ -87,6 +89,9 @@ GUI: [egui](https://github.com/emilk/egui) / eframe. Everything else is the stan
 
 (Progress, as shown by the right-click actions)
 <img src="screenshots/progress.png" alt="Progress window">
+
+(Drop choice)
+<img src="screenshots/drop_dialog.png" alt="Drop choice window">
 
 (Archive properties)
 <img src="screenshots/properties.png" alt="Archive properties">
